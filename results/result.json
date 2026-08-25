@@ -1,0 +1,9 @@
+{
+  "timestamp": "00:05:24.697",
+  "frame": 7785,
+  "text": "My mind rebels its stagnation",
+  "confidence": 94.73684210526316,
+  "low_confidence": false,
+  "detected_via": "asr",
+  "image": "results/matched_frame.png"
+}
