@@ -1,0 +1,7 @@
+yt-dlp>=2024.1.0
+opencv-python>=4.9.0
+pytesseract>=0.3.10
+rapidfuzz>=3.6.0
+numpy>=1.26.0
+pytest>=8.0.0
+faster-whisper>=1.0.0
