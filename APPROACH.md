@@ -191,3 +191,25 @@ for OCR/segment-level matching where the target is searched for inside
 much longer, noisier surrounding text. Two different matching problems,
 now two deliberately different functions, not one function misapplied to
 both.
+
+## Early-exit optimization — a correctness fix, not just a speedup
+
+Both the OCR coarse scan and the ASR transcription originally processed
+the entire video/audio, then selected the globally highest-scoring
+candidate. This has a subtle correctness gap against the spec's own
+wording: the task asks for the **first** frame where the dialogue
+appears, not the best-scoring one. If the phrase occurred more than once
+in a video, and a later occurrence happened to score marginally higher
+(clearer audio, better lighting, etc.), the original code would silently
+return the wrong occurrence.
+
+Since both scans proceed strictly chronologically (coarse_scan samples
+frames in ascending order; faster-whisper yields transcript segments in
+ascending time order), stopping at the **first** sample/segment that
+crosses `MATCH_THRESHOLD` guarantees the true first occurrence is
+returned — the early exit is simultaneously a speed optimization and a
+correctness fix, not a trade-off between the two.
+
+Controlled by `--full-scan` (off by default) if the complete ranked
+candidate list is specifically wanted, e.g. to check whether a phrase
+occurs multiple times in a video.

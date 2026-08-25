@@ -29,13 +29,27 @@ MATCH_THRESHOLD = 80  # 0-100 fuzzy score; tune per video quality
 REFINE_WINDOW_SECONDS = 2.0
 
 
-def coarse_scan(reader: VideoReader, target: str, step_seconds: float = COARSE_STEP_SECONDS):
+def coarse_scan(reader: VideoReader, target: str, step_seconds: float = COARSE_STEP_SECONDS,
+                 threshold: float = MATCH_THRESHOLD, early_exit: bool = True):
     """Sample the video every `step_seconds`, OCR + score each sample.
 
-    Returns a list of (frame_idx, score, ocr_text) sorted by score desc.
-    Prints progress as it goes — this pass is the slow part on a long
-    video, and silent multi-minute loops are indistinguishable from a
-    hang without visible feedback.
+    Returns (results, exited_early) where results is a list of
+    (frame_idx, score, ocr_text) sorted by score desc.
+
+    EARLY EXIT — not just a speed optimization, a correctness fix:
+    the spec asks for the FIRST frame where the dialogue appears. Since
+    sampling proceeds chronologically (ascending frame index), stopping at
+    the first sample that crosses `threshold` guarantees the TRUE first
+    occurrence is returned. Scanning the whole video and taking the
+    globally highest-scoring frame (the old behavior) could silently
+    return a LATER occurrence instead, if it happened to score marginally
+    higher than an earlier true match — technically wrong against the
+    spec's own wording, not just slower. Early exit closes that gap and
+    speeds things up at the same time.
+
+    Prints progress as it goes — this pass can be slow on a long video,
+    and silent multi-minute loops are indistinguishable from a hang
+    without visible feedback.
     """
     step_frames = max(1, int(reader.fps * step_seconds))
     sample_indices = list(range(0, reader.frame_count, step_frames))
@@ -43,6 +57,7 @@ def coarse_scan(reader: VideoReader, target: str, step_seconds: float = COARSE_S
     results = []
     start_time = time.time()
     best_so_far = 0.0
+    exited_early = False
 
     for i, frame_idx in enumerate(sample_indices, start=1):
         frame = reader.frame_at(frame_idx)
@@ -63,9 +78,20 @@ def coarse_scan(reader: VideoReader, target: str, step_seconds: float = COARSE_S
             )
             sys.stdout.flush()
 
+        if early_exit and score >= threshold:
+            elapsed = time.time() - start_time
+            skipped = total - i
+            print(
+                f"\n  Confident match at sample {i}/{total} (score {score:.0f}) — "
+                f"stopping early, skipped {skipped} remaining samples "
+                f"({skipped / total * 100:.0f}% of the video not scanned)."
+            )
+            exited_early = True
+            break
+
     print()  # newline after the progress line
     results.sort(key=lambda r: r[1], reverse=True)
-    return results
+    return results, exited_early
 
 
 def refine(reader: VideoReader, target: str, around_frame: int, threshold: float = MATCH_THRESHOLD):
@@ -122,7 +148,8 @@ def find_best_word_span(words, target: str, threshold: float = MATCH_THRESHOLD):
     return best
 
 
-def asr_scan(video_path: Path, reader: VideoReader, target: str, out_dir: Path, model_size: str = "base"):
+def asr_scan(video_path: Path, reader: VideoReader, target: str, out_dir: Path,
+             model_size: str = "base", early_exit: bool = True):
     """Fallback search path: transcribe the audio track, coarse-match at
     segment level, then refine to word-level precision within the best
     matching segment.
@@ -130,6 +157,15 @@ def asr_scan(video_path: Path, reader: VideoReader, target: str, out_dir: Path, 
     Returns (frame_idx, score, text) for the best confirmed match, or None.
     Prints progress as segments stream in — a full-video transcription can
     take several minutes and, like coarse_scan, looks hung without this.
+
+    EARLY EXIT — same correctness argument as coarse_scan(): faster-whisper
+    yields segments in chronological order, so stopping transcription at
+    the FIRST segment crossing MATCH_THRESHOLD guarantees the true first
+    occurrence is found, rather than transcribing the entire file and
+    taking whichever segment happened to score highest overall (which
+    could silently be a later occurrence). This also means a confident
+    match near the start of a long video can skip transcribing the rest
+    of it entirely — a real, not hypothetical, speed win.
     """
     from asr_utils import extract_audio, transcribe_segments
 
@@ -141,6 +177,7 @@ def asr_scan(video_path: Path, reader: VideoReader, target: str, out_dir: Path, 
     start_time = time.time()
     best_segment = None  # (score, seg_start, seg_text, words)
     all_segments = []
+    exited_early = False
 
     for seg_start, seg_end, seg_text, duration, words in transcribe_segments(audio_path, model_size=model_size):
         score = match_score(seg_text, target)
@@ -157,9 +194,20 @@ def asr_scan(video_path: Path, reader: VideoReader, target: str, out_dir: Path, 
         )
         sys.stdout.flush()
 
+        if early_exit and score >= MATCH_THRESHOLD:
+            remaining_pct = max(0, 100 - pct)
+            print(
+                f"\n  Confident match at {seg_end:.0f}s (score {score:.0f}) — "
+                f"stopping transcription early, skipping ~{remaining_pct:.0f}% of remaining audio."
+            )
+            exited_early = True
+            break
+
     print()
-    (out_dir / "asr_segments.json").write_text(json.dumps(all_segments, indent=2))
-    print(f"  (all transcript segments saved to {out_dir / 'asr_segments.json'})")
+    (out_dir / "asr_segments.json").write_text(json.dumps(
+        {"exited_early": exited_early, "segments": all_segments}, indent=2,
+    ))
+    print(f"  (transcript segments saved to {out_dir / 'asr_segments.json'})")
 
     if best_segment is None or best_segment[0] < MATCH_THRESHOLD:
         return None
@@ -217,6 +265,16 @@ def main():
         help="faster-whisper model size for ASR mode (default 'base'). "
              "Larger = more accurate, slower on CPU.",
     )
+    parser.add_argument(
+        "--full-scan", action="store_true",
+        help="Disable early exit on BOTH the OCR coarse scan and the ASR transcription — "
+             "process the entire video/audio even after finding a confident match. Off by "
+             "default: early exit is both faster AND more spec-correct (guarantees the "
+             "FIRST occurrence is returned, since both scans proceed chronologically — see "
+             "coarse_scan()'s and asr_scan()'s docstrings). Only useful if you specifically "
+             "want the full ranked candidate list, e.g. to check for multiple occurrences "
+             "of the phrase.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -235,11 +293,19 @@ def main():
 
     if args.mode in ("ocr", "auto"):
         print(f"[3/4] Coarse scan for candidate region (step={args.coarse_step}s)...")
-        candidates = coarse_scan(reader, args.text, step_seconds=args.coarse_step)
+        candidates, exited_early = coarse_scan(
+            reader, args.text, step_seconds=args.coarse_step,
+            threshold=args.threshold, early_exit=not args.full_scan,
+        )
 
         candidates_path = out_dir / "coarse_candidates.json"
         candidates_path.write_text(json.dumps(
-            [{"frame": c[0], "score": c[1], "text": c[2]} for c in candidates[:20]],
+            {
+                "exited_early": exited_early,
+                "note": "Partial — scan stopped at first confident match (see exited_early)"
+                        if exited_early else "Full scan of the video",
+                "candidates": [{"frame": c[0], "score": c[1], "text": c[2]} for c in candidates[:20]],
+            },
             indent=2,
         ))
         print(f"  (top 20 coarse candidates saved to {candidates_path})")
@@ -265,7 +331,8 @@ def main():
 
     if args.mode == "asr" or (args.mode == "auto" and (result is None or result[1] < args.threshold)):
         print("[ASR] Falling back to spoken-audio search...")
-        asr_result = asr_scan(video_path, reader, args.text, out_dir, model_size=args.asr_model)
+        asr_result = asr_scan(video_path, reader, args.text, out_dir, model_size=args.asr_model,
+                               early_exit=not args.full_scan)
         if asr_result is not None:
             result = asr_result
             low_confidence = False

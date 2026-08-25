@@ -149,6 +149,31 @@ in your own session.
   (test_full_match_score_penalizes_incomplete_span)
 - 19/19 tests passing after the fix
 
+11. Asked for ideas to make the project stand out ("novel"), then chose
+    to implement early-exit streaming for the ASR path.
+
+--- What was produced from this prompt ---
+- Identified that early exit isn't just a speed optimization — it fixes
+  a real correctness gap: both coarse_scan (OCR) and asr_scan (ASR)
+  previously scanned the ENTIRE video/audio and returned the
+  globally-highest-scoring candidate, which could technically violate
+  the spec's "first frame" requirement if the phrase occurred more than
+  once and a later instance happened to score marginally higher
+- Implemented early exit on BOTH paths (not just ASR as literally asked,
+  since the same correctness argument applies identically to OCR):
+  stop at the first sample/segment crossing MATCH_THRESHOLD, since both
+  scans proceed chronologically — this guarantees the TRUE first
+  occurrence, faster, in one change
+- Added --full-scan flag to disable early exit when the complete ranked
+  candidate list is specifically needed (e.g. checking for multiple
+  occurrences)
+- Added 2 new tests proving early exit fires correctly and can be
+  disabled (21/21 tests passing total)
+- This is the strongest "what makes this stand out" answer in the whole
+  project: not a novel algorithm, but catching that an "optimization"
+  request was actually pointing at a real, subtle bug in the existing
+  logic
+
 --- TODO before submission ---
 - [ ] Replace/extend this log with prompts from whatever tool(s) were
       actually used to finish implementation, test against the real

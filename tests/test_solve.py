@@ -72,7 +72,25 @@ def test_coarse_scan_sorts_by_score_descending():
         return fake_texts.get(idx, "")
 
     with patch("solve.extract_text", side_effect=fake_extract_text):
-        results = solve.coarse_scan(reader, target)
+        results, exited_early = solve.coarse_scan(reader, target)
 
     assert results[0][0] == 2
-    assert results[0][1] >= results[1][1]
+    assert results[0][1] >= results[-1][1]
+    assert exited_early is True  # score 100 at sample 3/6 triggers early exit
+
+
+def test_coarse_scan_full_scan_flag_disables_early_exit():
+    frames = _make_frames(6)
+    reader = FakeReader(frames, fps=1.0)
+    target = "My mind rebels at stagnation"
+    fake_texts = {0: "", 1: "", 2: target, 3: "", 4: "", 5: ""}
+
+    def fake_extract_text(frame):
+        idx = frame[0, 0, 0]
+        return fake_texts.get(idx, "")
+
+    with patch("solve.extract_text", side_effect=fake_extract_text):
+        results, exited_early = solve.coarse_scan(reader, target, early_exit=False)
+
+    assert len(results) == 6  # all samples scanned, no early stop
+    assert exited_early is False

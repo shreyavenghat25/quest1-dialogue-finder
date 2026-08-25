@@ -93,8 +93,23 @@ def test_asr_scan_writes_segments_json(tmp_path):
     assert segments_file.exists()
     import json
     data = json.loads(segments_file.read_text())
-    assert len(data) == 1
-    assert all("start" in d and "score" in d for d in data)
+    assert "exited_early" in data
+    assert len(data["segments"]) == 1
+    assert all("start" in d and "score" in d for d in data["segments"])
+
+
+def test_asr_scan_early_exit_stops_after_first_confident_segment(tmp_path):
+    """The single fake segment already scores 100 and crosses threshold —
+    exited_early should be recorded as True."""
+    reader = FakeReader(fps=25.0)
+
+    with patch("asr_utils.extract_audio", return_value=tmp_path / "audio.wav"), \
+         patch("asr_utils.transcribe_segments", side_effect=fake_transcribe_segments):
+        solve.asr_scan(tmp_path / "video.mp4", reader, "My mind rebels at stagnation", tmp_path)
+
+    import json
+    data = json.loads((tmp_path / "asr_segments.json").read_text())
+    assert data["exited_early"] is True
 
 
 def test_find_best_word_span_excludes_unrelated_words():
