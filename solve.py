@@ -23,6 +23,7 @@ import cv2
 from video_utils import download_video, VideoReader
 from ocr_utils import extract_text
 from match_utils import match_score, full_match_score
+from vlm_utils import verify_frame_with_vlm
 
 COARSE_STEP_SECONDS = 1.0
 MATCH_THRESHOLD = 80  # 0-100 fuzzy score; tune per video quality
@@ -112,6 +113,31 @@ def refine(reader: VideoReader, target: str, around_frame: int, threshold: float
         score = match_score(text, target)
         if score >= threshold:
             return (frame_idx, score, text)
+
+
+def vlm_verify_candidates(reader: VideoReader, candidates, target: str, top_k: int = 5, client=None):
+    """Hybrid OCR+VLM step: verify only the top_k OCR candidates (by OCR
+    score) using a vision-LLM, checked in CHRONOLOGICAL order so the
+    first genuinely confirmed occurrence wins.
+
+    Re-sorted to chronological order before checking — candidates comes
+    in sorted by OCR score descending, but verifying in that order could
+    return a later frame that happened to have a slightly higher OCR
+    score, which would violate the same "first occurrence" requirement
+    the early-exit optimization exists to protect.
+
+    Returns (frame_idx, confidence, extracted_text) for the first
+    chronological candidate the VLM confirms, or None if none confirmed.
+    """
+    shortlist = sorted(candidates[:top_k], key=lambda c: c[0])
+    for frame_idx, _ocr_score, _ocr_text in shortlist:
+        frame = reader.frame_at(frame_idx)
+        if frame is None:
+            continue
+        matched, extracted_text, confidence = verify_frame_with_vlm(frame, target, client=client)
+        if matched:
+            return (frame_idx, confidence, extracted_text)
+    return None
     return None
 
 
@@ -275,6 +301,22 @@ def main():
              "want the full ranked candidate list, e.g. to check for multiple occurrences "
              "of the phrase.",
     )
+    parser.add_argument(
+        "--verify-with-vlm", action="store_true",
+        help="Hybrid mode: after the OCR coarse scan, verify the top --vlm-top-k "
+             "candidates with a vision-LLM (Claude) before trusting or discarding "
+             "them. Fixes OCR's known false-positive weakness (no semantic "
+             "understanding) at the cost of a small number of API calls, not one "
+             "per frame in the video. Requires the `anthropic` package and an "
+             "ANTHROPIC_API_KEY environment variable. Off by default — costs money "
+             "and requires network access to the Claude API.",
+    )
+    parser.add_argument(
+        "--vlm-top-k", type=int, default=5,
+        help="How many top OCR candidates to verify with the vision-LLM when "
+             "--verify-with-vlm is set (default 5). Bounds API cost regardless of "
+             "video length.",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -325,6 +367,23 @@ def main():
                 print("Top candidates:")
                 for c in candidates[:5]:
                     print(f"  frame {c[0]:>6}  score {c[1]:5.1f}  text={c[2]!r}")
+
+        # Hybrid OCR+VLM verification — regardless of whether OCR alone
+        # crossed the threshold, since this is specifically meant to
+        # rescue cases where OCR's own score is unreliable (either a
+        # true match scored too low due to OCR noise, or a false
+        # positive scored too high — see vlm_verify_candidates()).
+        if args.verify_with_vlm and candidates:
+            print(f"[VLM] Verifying top {min(args.vlm_top_k, len(candidates))} "
+                  f"OCR candidates with vision-LLM...")
+            vlm_result = vlm_verify_candidates(reader, candidates, args.text, top_k=args.vlm_top_k)
+            if vlm_result is not None:
+                result = vlm_result
+                method = "ocr+vlm"
+                low_confidence = False
+                print(f"  VLM confirmed a match at frame {result[0]}.")
+            else:
+                print("  VLM did not confirm any of the shortlisted candidates.")
 
         if result and result[1] < args.threshold:
             low_confidence = True

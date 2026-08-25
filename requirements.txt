@@ -5,3 +5,6 @@ rapidfuzz>=3.6.0
 numpy>=1.26.0
 pytest>=8.0.0
 faster-whisper>=1.0.0
+# anthropic is only required if using --verify-with-vlm (the hybrid
+# OCR+vision-LLM verification path). Uncomment if using that flag:
+# anthropic>=0.40.0

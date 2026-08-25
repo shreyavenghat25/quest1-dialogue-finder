@@ -3,3 +3,6 @@ results/audio.wav
 __pycache__/
 .pytest_cache/
 *.pyc
+docker_results/
+*.part
+*.ytdl
