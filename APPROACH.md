@@ -213,3 +213,92 @@ correctness fix, not a trade-off between the two.
 Controlled by `--full-scan` (off by default) if the complete ranked
 candidate list is specifically wanted, e.g. to check whether a phrase
 occurs multiple times in a video.
+
+## Hybrid vision-LLM verification (implemented, opt-in)
+
+Tesseract has no semantic understanding of what it's reading — it's
+pixel-level pattern matching, which is exactly why the earlier
+false-positive bug was possible at all (a meaningless character fragment
+could score as a "match" purely on string similarity). A vision-language
+model can be asked directly whether a frame contains specific text,
+reasoning about the image rather than just computing a similarity score
+against noisy OCR output.
+
+Running a vision-LLM on every coarse-scan sample would be too slow and
+too expensive to be practical across a whole video, so this is a hybrid,
+tiered design, implemented in `vlm_utils.py` and wired into `solve.py`
+behind `--verify-with-vlm`:
+
+1. Coarse scan runs exactly as before — cheap, fast, local Tesseract,
+   across the whole video. Unmodified.
+2. Only the **top-K** coarse candidates by OCR score are passed to the
+   vision-LLM (`--vlm-top-k`, default 5) — a small, cost-bounded set
+   regardless of video length.
+3. Those candidates are **re-sorted to chronological order** before
+   verification (`vlm_verify_candidates()`), and checked in that order,
+   stopping at the first one the LLM confirms. This is deliberate and
+   tested (`test_vlm_verify_candidates_checks_chronologically_not_by_ocr_score`):
+   verifying in OCR-score order could return a later frame that happened
+   to have a marginally higher OCR score, which would violate the same
+   "first occurrence" requirement the early-exit optimization exists to
+   protect elsewhere in this project. Whichever detector produces the
+   final answer, "first occurrence" should mean the same thing.
+4. Uses a small/cheap model (Haiku-class) rather than a large one — this
+   is a focused visual-verification task on a handful of images, not
+   open-ended reasoning, so a large model would be unnecessary cost.
+
+This mirrors a standard retrieval-then-rerank pattern — cheap search over
+everything, expensive verification only on a short list — and fixes the
+false-positive problem at its root (semantic understanding) rather than
+only patching around it with heuristics like the length guard (which
+still exists and still matters for the plain-OCR path when
+`--verify-with-vlm` isn't used).
+
+**Why this is opt-in, not the default:** it requires the `anthropic`
+package, an `ANTHROPIC_API_KEY`, network access, and costs real money per
+call — none of which should be silently required just to run the base
+solution. `--mode auto` (OCR → ASR fallback) remains fully self-contained
+and free to run; `--verify-with-vlm` is an additional layer on top for
+when higher trust in the OCR path specifically is worth the cost.
+
+**What's tested vs. what isn't:** `vlm_utils.py`'s parsing logic and
+`vlm_verify_candidates()`'s chronological-ordering and top-K-bounding
+behavior are covered by unit tests using a fake client (no real API
+calls). What's NOT verified is a live run against the actual video with a
+real Anthropic API key — that would need `ANTHROPIC_API_KEY` set and
+willingness to spend API credits, which wasn't done here given time.
+
+## Performance optimizations — sequential I/O + parallel OCR
+
+Two additional optimizations, both correctness-preserving (verified by
+tests, not just assumed):
+
+**1. Sequential frame reading instead of per-sample seeking.**
+The original coarse_scan and refine both called `frame_at(idx)` — which
+internally does `cv2.CAP_PROP_POS_FRAMES` seeking — once per sample.
+For compressed video (H.264/H.265), an arbitrary seek isn't O(1): the
+decoder typically has to walk forward from the nearest preceding keyframe
+internally, so many repeated seeks can cost far more than a single
+sequential pass. `VideoReader.iter_frames()` seeks ONCE to the starting
+position, then uses `cap.grab()` (cheap — advances one frame without
+decoding) for frames being skipped, and `cap.retrieve()` (decodes) only
+for frames actually wanted. Both `coarse_scan` and `refine` now use this.
+
+**2. Batched, parallel OCR during the coarse scan.**
+Frames are gathered into chronological batches (`--ocr-batch-size`,
+default 8), and OCR runs concurrently across a batch via a thread pool
+(`--ocr-workers`, default `min(8, cpu_count)`). This is genuine
+parallelism, not fake: `pytesseract` invokes Tesseract as a subprocess,
+which releases Python's GIL while waiting on it, so multiple OCR calls
+really do run concurrently on a multi-core machine.
+
+**Preserving the early-exit correctness guarantee under parallelism.**
+`executor.map()` (not `submit()` + `as_completed()`) keeps results in
+the same order as the input batch, so scanning a completed batch for the
+first frame crossing the threshold still happens in chronological order
+within that batch — and since batches themselves are processed strictly
+in sequence, the "first occurrence" guarantee from the early-exit fix is
+fully preserved, not just approximately true. This is specifically
+covered by `test_coarse_scan_batched_parallel_ocr_still_finds_earliest_match`,
+which sets up a later match that would "win" under naive out-of-order
+parallelism and confirms the earlier one is still returned.

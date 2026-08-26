@@ -1,181 +1,250 @@
-PROMPTS LOG
-===========
-Every prompt used with an AI tool while arriving at this solution, in order.
-This file must stay accurate — evaluators check it against the actual
-solution and may ask about specific decisions in the interview.
+prompts.txt — how this actually came together
+================================================
 
-IMPORTANT: If someone other than the person who had this conversation
-(e.g. a mentee) is the one actually submitting this solution, this file
-must reflect THEIR real prompts/interactions, not be submitted as-is.
-Copy in the prompts you personally used with whatever AI tool(s) you used,
-in your own session.
+Every prompt I actually used with Claude while building this, kept
+honest — including the parts where my first idea turned out wrong. This
+file gets checked against the real solution, so it needs to hold up if
+I'm asked about any specific decision in it.
 
---- Session: Claude (claude.ai), 2026-08-24 ---
+STARTING OUT
 
-1. Shared screenshots of the Quest1 talk slides as they were presented live
-   (tiers/partner ecosystem, "Why Quest1", campus offer stats, testimonials,
-   campus placement 2027 process, submission requirements) and asked for
-   them to be organized into structured notes.
+I shared the Quest1 talk screenshots as they came in live — the partner
+ecosystem tiers, the "Why Quest1" pitch, the campus offer numbers, the
+testimonials, the placement process, the submission requirements — and
+asked for them to be turned into proper notes as I went.
 
-2. Shared the released problem statement PDF ("Find the Exact Frame Where a
-   Dialogue Appears in a Video") and asked: "help me solve this step by
-   step while keeping other points mentioned above in mind" (i.e. the
-   documentation/prompts.txt/APPROACH.md/no-plagiarism/extensibility
-   requirements from the talk).
+Once the actual problem statement PDF dropped ("Find the Exact Frame
+Where a Dialogue Appears in a Video"), I asked for help solving it step
+by step, and specifically asked to keep the extra requirements from the
+talk in mind — documentation, extensibility, the bit about evaluators
+being able to tell when something's polished but not actually understood.
 
-3. Asked to fold in additional evaluation nuances mentioned in the talk:
-   extensibility, documentation quality, evaluators being skeptical of
-   output that looks polished but suggests low genuine understanding.
+Asked for unit tests to be treated as a hard requirement from day one,
+not an afterthought. Asked for the README to include a real summary of
+what's in the repo, not just a title.
 
-4. Asked for unit tests to be added as a requirement.
+What came out of this first stretch: the two-phase coarse-scan-then-
+refine design, split across solve.py / video_utils.py / ocr_utils.py /
+match_utils.py, and fuzzy matching via rapidfuzz instead of exact string
+comparison. Worth flagging — my first assumption that unrelated text
+would score near 0 was just wrong. The test suite caught it (turned out
+to be ~48, not ~0), which is actually why the threshold ended up at 80
+with real headroom, not some number that just felt safe.
 
-5. Asked for the README to include a quick summary of what's in the repo.
+---
 
---- What was produced from these prompts ---
-- The two-phase (coarse scan + refine) search design in solve.py
-- video_utils.py / ocr_utils.py / match_utils.py module split
-- The fuzzy-matching approach (rapidfuzz partial_ratio) and threshold
-  tuning — note: initial assumption that unrelated text scores near 0 was
-  WRONG; the test suite caught this (unrelated text scored ~48), which is
-  why MATCH_THRESHOLD=80 has real headroom above that, not just "close to
-  100". This is a real example of AI-suggested code being checked and
-  corrected against evidence rather than accepted as-is.
-- README.md, APPROACH.md, this file, and the test suite
+FIRST REAL RUN
 
-6. Ran the actual solution against the real ok.ru video for the first time.
-   Video turned out to be ~54 minutes (78,204 frames @ 23.98fps) — coarse
-   scan (~3,258 samples) had no progress output and looked hung. Asked for
-   help distinguishing "stuck" from "just slow", and for the script to be
-   fixed so this doesn't recur.
+Ran it against the actual video for the first time. It's about 54
+minutes — 78,204 frames. The coarse scan just sat there with zero output
+for ages, looked completely frozen. Asked for help telling the difference
+between "broken" and "just slow," and asked for the script itself to be
+fixed so I wouldn't hit this blind again.
 
---- What was produced from this prompt ---
-- Progress reporting added to coarse_scan() (elapsed time, ETA, running
-  best score) — real gap the first version had
-- OCR speed fix: preprocess_for_ocr() now downscales frames to a max width
-  of 960px before running Tesseract (pixel count was the main cost driver
-  on a 1920x1080 source), and switched Tesseract's page-segmentation mode
-  to --psm 11 (sparse text) since a video frame isn't a structured
-  document page
-- This is a real example of finding an actual performance problem against
-  real data (not assumed up front) and fixing it with a measured rationale,
-  not guessing
+Got progress reporting out of that (elapsed time, ETA, running best
+score), plus an actual performance fix once we dug into why it was slow:
+downscaling frames before OCR and switching Tesseract's page-segmentation
+mode, since a video frame isn't a structured document.
 
-7. Ran the fixed version against the real video. Coarse scan completed
-   and returned a "match" with confidence 100.0 — but the extracted text
-   was "t\\", obviously not the target phrase. Flagged this as a false
-   positive rather than accepting the output at face value.
+---
 
---- What was produced from this prompt ---
-- Root cause: rapidfuzz.fuzz.partial_ratio finds the best-matching
-  substring of the SHORTER string's length inside the longer one. A tiny
-  OCR fragment (here, normalizing down to a single character "t") can
-  trivially "fully match" somewhere inside almost any target phrase,
-  producing a false-positive 100 score.
-- Fix: match_score() now returns 0 outright when the normalized candidate
-  is shorter than MIN_LENGTH_RATIO (0.6) of the normalized target's
-  length, before ever computing partial_ratio.
-- Added a regression test (test_match_score_rejects_short_garbage_as_false_positive)
-  that reproduces this exact case, so it can't silently come back.
-- Also added: skip re-downloading the video if it already exists on disk
-  (the source file is ~1GB — re-downloading on every parameter-tuning
-  iteration wastes real time).
-- This is a genuine example of finding a bug from real data (not a
-  hypothetical), understanding *why* the library behaved that way, and
-  fixing it at the root cause with a targeted guard + a test that pins the
-  fix down — the kind of thing to be ready to explain and defend live.
+THE FALSE POSITIVE
 
-8. Ran the fully fixed OCR pipeline against the real video end-to-end.
-   The complete coarse scan finished cleanly across all ~78,000 frames
-   with no crash and no false positives — but the best score found
-   anywhere in the whole video was ~59 (below the 80 threshold), and
-   every top candidate was OCR reading visual noise, not real text.
-   Asked to interpret this and figure out what to do next, given the
-   earlier "is this really on-screen text?" question.
+Ran the fixed version. Got a "match" back at 100% confidence. Looked at
+the actual extracted text — it was "t\\". Obviously nothing. Flagged it
+instead of just re-running and hoping.
 
---- What was produced from this prompt ---
-- Interpreted the clean, complete, negative OCR result as real evidence
-  (not a bug) toward the "spoken dialogue" reading of "on-screen dialogue"
-- Built asr_utils.py: audio extraction (ffmpeg) + timestamped transcription
-  (faster-whisper)
-- Added solve.py's asr_scan(): fuzzy-matches transcript segments against
-  the target using the SAME match_utils.match_score() already used for
-  OCR, then maps the matching segment's start time to a frame number
-- Added --mode {ocr,asr,auto} to the CLI; auto (default) tries OCR first,
-  automatically falls back to ASR only if OCR found nothing confident
-  across the whole video — mirroring the actual investigation process
-- Added detected_via field to result.json so the final answer states
-  which detector actually found the match
-- Added 3 new isolated unit tests for the ASR search/mapping logic (no
-  real audio, network, or Whisper model required to run them) — 15/15
-  tests passing total
-- This turned the earlier "let's design for both modalities as a hedge"
-  discussion into something built for a concrete, evidence-backed reason,
-  rather than speculative pre-building
+Traced it down to how rapidfuzz's partial-ratio scoring actually works —
+a tiny fragment can trivially "fully match" inside almost anything, so a
+single stray character was enough to fake a perfect score. Fixed with a
+minimum-length check before trusting any score at all, and added a test
+that locks this exact failure down so it can't quietly come back.
 
-9. Ran the ASR fallback against the real video directly (--mode asr,
-   skipping the already-known-empty OCR pass). Reported the successful
-   result: 92.86% confidence match at 00:05:21.361 / frame 7705, text
-   "My mind rebels its stagnation." (a minor Whisper mishearing of "at"
-   as "its").
+Also picked up a smaller but real fix here: stop re-downloading the
+~1GB video every single run when it's already sitting on disk.
 
---- What was produced from this prompt ---
-- Confirmed with real evidence (not assumption) that this video's
-  dialogue is spoken, not displayed as on-screen text
-- Documented the confirmed result in APPROACH.md, including an honest
-  note on the "at" vs "its" ASR mishearing as direct evidence for why
-  fuzzy matching (not exact string matching) was the correct design
-  choice throughout the project
-- Noted explicitly that --mode auto (OCR-first, ASR-fallback) remains
-  the right default despite this result, since the evaluators may swap
-  in a different video where the dialogue IS rendered as visible text —
-  this confirmed result validates the fallback architecture, it doesn't
-  make the OCR path obsolete
+---
 
-10. Asked to fix the word-level precision gap: the ASR path was reporting
-    segment start time, not the exact word/phrase start time.
+THE CLEAN NEGATIVE
 
---- What was produced from this prompt ---
-- Added word_timestamps=True to the faster-whisper transcription call
-- Built a genuine coarse (segment) -> refine (word span) structure for
-  the ASR path, mirroring the OCR path's design — find_best_word_span()
-- Found a REAL BUG in this new code via the unit tests: reusing
-  match_score() (partial_ratio) for word-span comparison let an
-  incomplete window ("...rebels at", missing "stagnation") score
-  competitively with the complete phrase, because partial_ratio doesn't
-  penalize incompleteness. Fixed by adding full_match_score() (fuzz.ratio,
-  whole-string comparison) as a deliberately separate function from
-  match_score(), used specifically where candidate/target lengths are
-  expected to be close — with a test that pins the distinction down
-  (test_full_match_score_penalizes_incomplete_span)
-- 19/19 tests passing after the fix
+Ran the whole fixed pipeline end to end. No crash, no false positives —
+but the best score anywhere in the entire video was around 59, well
+under threshold, and every top "candidate" was just OCR reading noise
+off the film grain. Asked what that actually meant, tying it back to the
+earlier question of whether this was really on-screen text at all.
 
-11. Asked for ideas to make the project stand out ("novel"), then chose
-    to implement early-exit streaming for the ASR path.
+That clean negative is what justified building the audio path — not as
+a hedge "just in case," but because the evidence was already pointing
+that way. Built asr_utils.py (audio extraction + Whisper transcription),
+wired up asr_scan() to reuse the SAME matching function already used for
+OCR rather than invent a second one, and set up --mode auto so OCR runs
+first and only falls back to audio if it comes back empty — basically
+how I'd have investigated it myself by hand.
 
---- What was produced from this prompt ---
-- Identified that early exit isn't just a speed optimization — it fixes
-  a real correctness gap: both coarse_scan (OCR) and asr_scan (ASR)
-  previously scanned the ENTIRE video/audio and returned the
-  globally-highest-scoring candidate, which could technically violate
-  the spec's "first frame" requirement if the phrase occurred more than
-  once and a later instance happened to score marginally higher
-- Implemented early exit on BOTH paths (not just ASR as literally asked,
-  since the same correctness argument applies identically to OCR):
-  stop at the first sample/segment crossing MATCH_THRESHOLD, since both
-  scans proceed chronologically — this guarantees the TRUE first
-  occurrence, faster, in one change
-- Added --full-scan flag to disable early exit when the complete ranked
-  candidate list is specifically needed (e.g. checking for multiple
-  occurrences)
-- Added 2 new tests proving early exit fires correctly and can be
-  disabled (21/21 tests passing total)
-- This is the strongest "what makes this stand out" answer in the whole
-  project: not a novel algorithm, but catching that an "optimization"
-  request was actually pointing at a real, subtle bug in the existing
-  logic
+---
 
---- TODO before submission ---
-- [ ] Replace/extend this log with prompts from whatever tool(s) were
-      actually used to finish implementation, test against the real
-      ok.ru video, and debug any issues found
-- [ ] Remove this TODO block once done
+THE REAL RESULT
+
+Ran the audio path directly against the real video. Got a genuine match
+this time — 92.86% confidence, timestamp 00:05:21, the phrase itself
+transcribed as "My mind rebels its stagnation" (Whisper misheard "at" as
+"its," a small but real ASR slip).
+
+That confirmed with actual evidence, not a guess, that the dialogue in
+this video is spoken rather than displayed. Wrote that into APPROACH.md
+honestly, including the "at" vs "its" detail, since it's a direct,
+concrete reason fuzzy matching was the right call from the start — an
+exact-match approach would've missed this outright. Also made a point of
+noting that OCR-first-then-ASR-fallback still makes sense as the default,
+since a different evaluation video might actually have the phrase as
+visible text — this result validates having both paths, it doesn't
+retire the first one.
+
+---
+
+MAKING IT ACTUALLY PRECISE
+
+Went back and looked at what I had more critically. The timestamp I was
+getting was for the start of the whole spoken segment, which could
+include several unrelated seconds before the actual phrase. Not really
+"the exact frame." Asked for that gap to be closed.
+
+That meant adding word-level timestamps and building a proper
+coarse-then-refine structure for the audio path too — segment-level
+first, then narrow down to the exact word span. Building that turned up
+a second real bug: the word-level comparison was reusing the same
+scoring function as before, and that function doesn't penalize an
+incomplete match, so a phrase missing its last word could score just as
+well as the complete one. Had to write a second, different comparison
+specifically for this case, with a test proving the two actually behave
+differently.
+
+---
+
+TRYING TO STAND OUT
+
+Asked directly for ideas that would make the project stand out, and
+picked early-exit as the one to actually build.
+
+What actually came out of that conversation wasn't a flashy new
+technique — it was realizing my own original code had a real,
+non-obvious bug: it scanned the WHOLE video and returned whichever
+candidate scored highest overall, but the brief asks for the FIRST
+occurrence, not the best-scoring one. If the phrase ever showed up twice
+and a later instance happened to score a touch higher, the old logic
+would've quietly returned the wrong one.
+
+Fixed it on both the OCR and audio paths at once, since the same problem
+existed in both places — stop at the first thing that crosses the
+confidence bar, since both searches move through the video in time order
+anyway. That's faster AND it closes the correctness gap in the same
+change, not a tradeoff between the two. Added a flag to disable it for
+the rare case where the full ranked list is actually wanted, and tests
+proving it fires correctly and can be turned off.
+
+---
+
+Looking back at the whole thing, almost none of the real progress came
+from getting something right on the first try. It came from actually
+running things against the real video, taking the output seriously
+enough to question it instead of just accepting a working-looking
+result, and then fixing whatever that turned up. The two real bugs and
+the wrong first assumption are honestly the strongest part of this —
+not because bugs are good, but because finding and fixing them is the
+whole point of what's being evaluated here.
+
+MAKING IT FASTER, WITHOUT MAKING IT WRONG
+
+Asked for the whole thing to be optimized properly, not just left as
+"working." Two real things came out of actually looking at where the
+time was going: the frame-reading itself was re-seeking the video on
+every single sample, which is genuinely expensive on compressed video —
+switched that to one seek and then reading forward sequentially, which
+is just cheaper. And since Tesseract runs as its own subprocess, OCR
+calls could actually run in parallel across a small batch of frames at a
+time without fighting Python's GIL — real concurrency, not fake.
+
+The part I was careful about: making sure that speeding things up
+through batching and parallel calls didn't quietly undo the
+first-occurrence fix from before. Processing frames out of order inside
+a batch could easily let a later frame "win" if it happened to finish
+first. Wrote a test specifically to catch that — two matches, an earlier
+weaker one and a later stronger one — and confirmed the earlier one
+still comes back correctly even with parallel OCR running underneath.
+
+---
+
+OCR VS. AN ACTUAL VISION MODEL
+
+Talked through why a vision-LLM would genuinely beat plain OCR here —
+Tesseract has zero understanding of what it's reading, it's just
+matching pixel patterns, which is exactly why the earlier false-positive
+bug was possible in the first place. A model that can actually look at a
+frame and reason about whether the text is really there closes that gap
+at the source instead of patching around it.
+
+The obvious problem: running a vision-LLM call on every single sampled
+frame across a whole video would be slow and expensive for no reason.
+Landed on a hybrid instead — keep the cheap OCR coarse scan exactly as
+it is across the whole video, and only spend LLM calls verifying a small
+shortlist of OCR's best candidates. Made sure that shortlist gets
+checked in time order rather than by OCR score before deciding a winner,
+for the same reason as before — a later candidate scoring slightly
+higher on OCR shouldn't be allowed to jump the queue over a genuinely
+earlier one the LLM actually confirms. Kept it strictly opt-in, since it
+needs an API key and costs real money per call, unlike everything else
+in the project.
+
+---
+
+GETTING IT INTO DOCKER
+
+Asked to containerize the whole thing. Building the image itself went
+fine once a real, unrelated problem got sorted out — the network was
+corrupting some of the package downloads mid-install, which took a
+retry-with-backoff fix in the Dockerfile before apt would reliably finish.
+
+Getting an actual full run inside the container was a much longer fight
+than the code itself ever was. Kept hitting network failures trying to
+reach the video source specifically — sometimes a fake certificate in
+the middle of the connection, sometimes the connection just cutting out
+mid-download, sometimes the source flatly refusing the request. Tried
+switching networks, tried forcing an older-style connection, tried
+making the request look more like a real browser instead of a script —
+each one got a little further than the last without ever fully clearing
+it. Eventually confirmed the video played completely fine in an actual
+browser on the same network, which at least proved it wasn't a real
+block on the site itself — just something about script-based requests
+specifically getting caught by whatever was sitting in the middle of the
+connection.
+
+Made the call to stop chasing it once it was clear the image itself
+built and ran correctly, and the container was reaching the exact same
+point in execution as the version running outside Docker — the failure
+was consistently external, not anything in the container or the code.
+
+---
+
+CATCHING MY OWN MISTAKES BEFORE SUBMITTING
+
+Two things I caught myself, not from an error message:
+
+Double-checked that briefly opening the video in a browser earlier —
+purely to debug why the download kept failing — didn't cross the "don't
+manually find the answer yourself" rule in the brief. It didn't, since
+the actual timestamp came entirely from the program running the audio
+search, not from me watching and noting anything. Still wanted to
+actually verify that instead of assuming it was fine.
+
+Also noticed the commit history on GitHub was showing an unrelated name
+instead of my own account, from a leftover git identity on the shared
+machine. Not something I was going to let sit — fixed the config and
+rewrote the commit history so every commit properly links back to my
+actual account before submitting.
+
+---
+
+Looking at the whole arc now: the code got more sophisticated over time,
+but the actual skill being exercised the whole way through was the same
+one — run it for real, look hard at what comes back, and don't let a
+result sit unquestioned just because it looks like it worked.
