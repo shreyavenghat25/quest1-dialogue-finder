@@ -62,6 +62,13 @@ Other useful flags:
 --insecure                   # only if hitting CERTIFICATE_VERIFY_FAILED from
                               # network-level TLS interception (e.g. some
                               # campus WiFi) — see the warning it prints
+--ocr-workers 4 --ocr-batch-size 8  # tune parallel-OCR concurrency during coarse scan
+--verify-with-vlm            # hybrid mode: verify top OCR candidates with
+                              # Claude's vision API before trusting them (fixes
+                              # OCR's false-positive weakness at the source).
+                              # Needs `pip install anthropic` + ANTHROPIC_API_KEY.
+                              # Off by default — costs money, needs network access.
+--vlm-top-k 5                 # how many top OCR candidates to verify (bounds API cost)
 ```
 
 Output: `results/result.json` and `results/matched_frame.png`. Also
