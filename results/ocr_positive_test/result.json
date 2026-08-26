@@ -1,0 +1,9 @@
+{
+  "timestamp": "00:00:04.000",
+  "frame": 100,
+  "text": "Helloffromitheltestivideo)",
+  "confidence": 84.0,
+  "low_confidence": false,
+  "detected_via": "ocr",
+  "image": "results/matched_frame.png"
+}

@@ -1,0 +1,31 @@
+{
+  "exited_early": true,
+  "note": "Partial \u2014 scan stopped at first confident match (see exited_early)",
+  "candidates": [
+    {
+      "frame": 100,
+      "score": 84.0,
+      "text": "Helloffromitheltestivideo)\n"
+    },
+    {
+      "frame": 0,
+      "score": 0.0,
+      "text": ""
+    },
+    {
+      "frame": 25,
+      "score": 0.0,
+      "text": ""
+    },
+    {
+      "frame": 50,
+      "score": 0.0,
+      "text": ""
+    },
+    {
+      "frame": 75,
+      "score": 0.0,
+      "text": ""
+    }
+  ]
+}

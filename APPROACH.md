@@ -302,3 +302,48 @@ fully preserved, not just approximately true. This is specifically
 covered by `test_coarse_scan_batched_parallel_ocr_still_finds_earliest_match`,
 which sets up a later match that would "win" under naive out-of-order
 parallelism and confirms the earlier one is still returned.
+
+## OCR-positive path — verified with a synthetic test video
+
+Every real-data confirmation up to this point came from one video: the
+OCR path only ever produced a genuine NEGATIVE result on it (no on-screen
+text present), and the ASR path produced the genuine POSITIVE. The
+OCR-positive path — actually detecting real on-screen text — had never
+been exercised against real data, only unit-tested with mocks.
+
+Closed that gap with a small, controlled synthetic test rather than
+searching for an unverified third-party video (which can't be trusted to
+actually contain what it's assumed to contain without watching it
+directly). Generated a 10-second local video (ffmpeg + a still frame from
+Pillow) with the phrase "Hello from the test video" visible on screen
+only between seconds 4–7, and nothing on screen at any other point —
+a fully known, controlled ground truth.
+
+Running `solve.py --mode ocr` against it (bypassing the network entirely,
+since `download_video()` already skips re-fetching when the target file
+exists locally) produced:
+
+```json
+{
+  "timestamp": "00:00:04.000",
+  "frame": 100,
+  "text": "Helloffromitheltestivideo)",
+  "confidence": 84.0,
+  "low_confidence": false,
+  "detected_via": "ocr"
+}
+```
+
+The timestamp (00:00:04.000, frame 100 at 25fps) lands exactly at the
+true start of the on-screen text window, and OCR's extracted text —
+noisy but clearly the real phrase with some character-merging artifacts
+— was correctly identified by fuzzy matching at 84% confidence. Early
+exit also fired correctly here (stopped at coarse sample 5/10, the first
+one crossing threshold, rather than scanning the full 10-second clip
+unnecessarily).
+
+This is the first real, non-mocked confirmation that the OCR path
+correctly detects genuine on-screen text, not just correctly detects its
+absence — closing the "designed to generalize vs. proven to generalize"
+gap for the OCR-positive case specifically. Saved under
+`results/ocr_positive_test/` alongside the main video's results.
