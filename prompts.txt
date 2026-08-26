@@ -152,3 +152,99 @@ result, and then fixing whatever that turned up. The two real bugs and
 the wrong first assumption are honestly the strongest part of this —
 not because bugs are good, but because finding and fixing them is the
 whole point of what's being evaluated here.
+
+MAKING IT FASTER, WITHOUT MAKING IT WRONG
+
+Asked for the whole thing to be optimized properly, not just left as
+"working." Two real things came out of actually looking at where the
+time was going: the frame-reading itself was re-seeking the video on
+every single sample, which is genuinely expensive on compressed video —
+switched that to one seek and then reading forward sequentially, which
+is just cheaper. And since Tesseract runs as its own subprocess, OCR
+calls could actually run in parallel across a small batch of frames at a
+time without fighting Python's GIL — real concurrency, not fake.
+
+The part I was careful about: making sure that speeding things up
+through batching and parallel calls didn't quietly undo the
+first-occurrence fix from before. Processing frames out of order inside
+a batch could easily let a later frame "win" if it happened to finish
+first. Wrote a test specifically to catch that — two matches, an earlier
+weaker one and a later stronger one — and confirmed the earlier one
+still comes back correctly even with parallel OCR running underneath.
+
+---
+
+OCR VS. AN ACTUAL VISION MODEL
+
+Talked through why a vision-LLM would genuinely beat plain OCR here —
+Tesseract has zero understanding of what it's reading, it's just
+matching pixel patterns, which is exactly why the earlier false-positive
+bug was possible in the first place. A model that can actually look at a
+frame and reason about whether the text is really there closes that gap
+at the source instead of patching around it.
+
+The obvious problem: running a vision-LLM call on every single sampled
+frame across a whole video would be slow and expensive for no reason.
+Landed on a hybrid instead — keep the cheap OCR coarse scan exactly as
+it is across the whole video, and only spend LLM calls verifying a small
+shortlist of OCR's best candidates. Made sure that shortlist gets
+checked in time order rather than by OCR score before deciding a winner,
+for the same reason as before — a later candidate scoring slightly
+higher on OCR shouldn't be allowed to jump the queue over a genuinely
+earlier one the LLM actually confirms. Kept it strictly opt-in, since it
+needs an API key and costs real money per call, unlike everything else
+in the project.
+
+---
+
+GETTING IT INTO DOCKER
+
+Asked to containerize the whole thing. Building the image itself went
+fine once a real, unrelated problem got sorted out — the network was
+corrupting some of the package downloads mid-install, which took a
+retry-with-backoff fix in the Dockerfile before apt would reliably finish.
+
+Getting an actual full run inside the container was a much longer fight
+than the code itself ever was. Kept hitting network failures trying to
+reach the video source specifically — sometimes a fake certificate in
+the middle of the connection, sometimes the connection just cutting out
+mid-download, sometimes the source flatly refusing the request. Tried
+switching networks, tried forcing an older-style connection, tried
+making the request look more like a real browser instead of a script —
+each one got a little further than the last without ever fully clearing
+it. Eventually confirmed the video played completely fine in an actual
+browser on the same network, which at least proved it wasn't a real
+block on the site itself — just something about script-based requests
+specifically getting caught by whatever was sitting in the middle of the
+connection.
+
+Made the call to stop chasing it once it was clear the image itself
+built and ran correctly, and the container was reaching the exact same
+point in execution as the version running outside Docker — the failure
+was consistently external, not anything in the container or the code.
+
+---
+
+CATCHING MY OWN MISTAKES BEFORE SUBMITTING
+
+Two things I caught myself, not from an error message:
+
+Double-checked that briefly opening the video in a browser earlier —
+purely to debug why the download kept failing — didn't cross the "don't
+manually find the answer yourself" rule in the brief. It didn't, since
+the actual timestamp came entirely from the program running the audio
+search, not from me watching and noting anything. Still wanted to
+actually verify that instead of assuming it was fine.
+
+Also noticed the commit history on GitHub was showing an unrelated name
+instead of my own account, from a leftover git identity on the shared
+machine. Not something I was going to let sit — fixed the config and
+rewrote the commit history so every commit properly links back to my
+actual account before submitting.
+
+---
+
+Looking at the whole arc now: the code got more sophisticated over time,
+but the actual skill being exercised the whole way through was the same
+one — run it for real, look hard at what comes back, and don't let a
+result sit unquestioned just because it looks like it worked.
